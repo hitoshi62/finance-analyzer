@@ -8,7 +8,7 @@ if [[ ! -d .venv ]]; then
 fi
 
 source .venv/bin/activate
-if ! python -c "import streamlit, pandas, pyarrow, yfinance" >/dev/null 2>&1; then
+if ! python -c "import streamlit, pandas, pyarrow, requests" >/dev/null 2>&1; then
   python -m ensurepip --upgrade
   python -m pip install -r requirements.txt
 fi
