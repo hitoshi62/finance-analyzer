@@ -15,7 +15,7 @@ from financial_analysis import (
     FRAME_TITLES, PeerSnapshot, build_six_frame_analysis,
     representative_peer_codes,
 )
-from financial_metrics import calculate_metrics
+from financial_cache import FinancialResult, load_financial_with_fallback
 from news_analysis import MaterialResult, collect_material_events
 
 st.set_page_config(page_title="企業財務分析", page_icon="📊", layout="wide")
@@ -62,15 +62,18 @@ def money(x: Optional[float], currency: str) -> str:
     return f"{x:,.0f} {currency}".strip()
 
 
-def load_financial_result(api_key: str, company: Company):
-    filing = find_latest_annual_filing(
-        company, lambda target_date: cached_document_list(api_key, target_date)
-    )
-    values = parse_financial_values(
-        read_edinet_csv_zip(cached_document_csv(api_key, filing.doc_id)),
-        company.has_consolidated,
-    )
-    return filing, values, calculate_metrics(values)
+def load_financial_result(api_key: str, company: Company) -> FinancialResult:
+    def fetch_live():
+        filing = find_latest_annual_filing(
+            company, lambda target_date: cached_document_list(api_key, target_date)
+        )
+        values = parse_financial_values(
+            read_edinet_csv_zip(cached_document_csv(api_key, filing.doc_id)),
+            company.has_consolidated,
+        )
+        return filing, values
+
+    return load_financial_with_fallback(company, fetch_live)
 
 
 st.title("企業財務分析アプリ")
@@ -98,7 +101,8 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     try:
         api_key = read_api_key(st.secrets)
         with st.spinner("EDINETから対象企業と同業他社の有価証券報告書を検索・取得中..."):
-            filing, values, metrics = load_financial_result(api_key, selected)
+            financial_result = load_financial_result(api_key, selected)
+            filing, values, metrics = financial_result.filing, financial_result.values, financial_result.metrics
             d = asdict(metrics)
             peers: list[PeerSnapshot] = []
             peer_errors: list[str] = []
@@ -117,11 +121,17 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
                     continue
                 peer_company = candidates[0]
                 try:
-                    peer_filing, _, peer_metrics = load_financial_result(api_key, peer_company)
+                    peer_result = load_financial_result(api_key, peer_company)
+                    peer_filing, peer_metrics = peer_result.filing, peer_result.metrics
                     peers.append(PeerSnapshot(
                         peer_company.name, peer_company.security_code[:4],
                         peer_filing.period_end, peer_metrics,
                     ))
+                    if peer_result.from_cache:
+                        peer_errors.append(
+                            f"{peer_company.name}: EDINET最新取得失敗のため前回取得データを使用"
+                            f"（最終取得 {peer_result.last_retrieved_at}）"
+                        )
                 except EdinetError as exc:
                     peer_errors.append(f"{peer_company.name}: {exc}")
     except EdinetError as exc:
@@ -129,6 +139,13 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
         st.stop()
 
     st.subheader(f"{selected.name}（証券コード {selected.security_code[:4]} / {selected.edinet_code}）")
+    if financial_result.from_cache:
+        st.warning(
+            "EDINET最新取得に失敗したため、前回取得データを使用しています。"
+            f" 最終取得日時: {financial_result.last_retrieved_at}（UTC）"
+        )
+    elif financial_result.cache_warning:
+        st.warning(financial_result.cache_warning)
     if selected.industry:
         st.caption(selected.industry)
     if not metrics.has_financials:
