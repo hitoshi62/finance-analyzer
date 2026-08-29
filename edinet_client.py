@@ -99,11 +99,19 @@ class EdinetClient:
         raise EdinetError(f"EDINET APIへの接続に失敗しました: {last_error}")
 
     def list_documents(self, target_date: date) -> list[dict[str, Any]]:
-        response = self._get("documents.json", {"date": target_date.isoformat(), "type": "2"})
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise EdinetError("EDINET書類一覧の応答を解析できませんでした。") from exc
+        payload: dict[str, Any] | None = None
+        last_error: ValueError | None = None
+        for attempt in range(3):
+            response = self._get("documents.json", {"date": target_date.isoformat(), "type": "2"})
+            try:
+                payload = response.json()
+                break
+            except ValueError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.5 * (2**attempt))
+        if payload is None:
+            raise EdinetError("EDINET書類一覧が一時的に非JSON応答を返しました。時間をおいて再試行してください。") from last_error
         status = str(payload.get("metadata", {}).get("status", "200"))
         if status != "200":
             message = payload.get("metadata", {}).get("message", "不明なエラー")
@@ -120,12 +128,19 @@ class EdinetClient:
 def load_company_list(content: bytes | None = None) -> list[Company]:
     """Load the official Japanese EDINET code list and retain listed issuers."""
     if content is None:
-        try:
-            response = requests.get(CODE_LIST_URL, timeout=30, headers={"User-Agent": "finance-analyzer/2.0"})
-            response.raise_for_status()
-            content = response.content
-        except requests.RequestException as exc:
-            raise EdinetError(f"EDINETコードリストを取得できませんでした: {exc}") from exc
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = requests.get(CODE_LIST_URL, timeout=30, headers={"User-Agent": "finance-analyzer/2.0"})
+                response.raise_for_status()
+                content = response.content
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.5 * (2**attempt))
+        if content is None:
+            raise EdinetError(f"EDINETコードリストを取得できませんでした: {last_error}") from last_error
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             csv_names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
