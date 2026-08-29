@@ -1,11 +1,15 @@
-from financial_analysis import PeerSnapshot, build_six_frame_analysis, dupont_driver, representative_peer_codes
+from financial_analysis import (
+    PeerSnapshot, build_six_frame_analysis, comparison_outlier_warning,
+    comparison_statistics, dupont_driver, representative_peer_codes,
+)
 from news_analysis import MaterialEvent, NewsItem
 from datetime import date
 from financial_metrics import Metrics
 
 
-def metrics(roe=0.10, roa=0.04, margin=0.08, operating=0.07, turnover=0.5, leverage=2.5):
-    return Metrics(100, 7, 8, 200, 80, roe, roa, margin, operating, turnover, leverage)
+def metrics(roe=0.10, roa=0.04, margin=0.08, operating=0.07, turnover=0.5, leverage=2.5,
+            net_income=8, operating_income=7):
+    return Metrics(100, operating_income, net_income, 200, 80, roe, roa, margin, operating, turnover, leverage)
 
 
 def test_representative_peers_are_industry_specific():
@@ -53,3 +57,29 @@ def test_events_update_three_material_dependent_frames():
     assert "自己株式取得" in result["最新材料"][0]
     assert "自己資本" in result["今後の注目指標"][0]
     assert "会社開示の続報" in result["投資家が確認すべき点"][0]
+
+
+def test_chubu_comparison_uses_median_when_tepco_is_loss_making_outlier():
+    chubu = metrics(roe=0.077, roa=0.031, margin=0.064, operating=0.065, turnover=0.48, leverage=2.49)
+    tepco = PeerSnapshot(
+        "東京電力ホールディングス株式会社", "9501", "2026-03-31",
+        metrics(roe=-0.20, roa=-0.05, margin=-0.15, operating=-0.08, turnover=0.42,
+                leverage=5.0, net_income=-20, operating_income=-8),
+    )
+    kansai = PeerSnapshot(
+        "関西電力株式会社", "9503", "2026-03-31",
+        metrics(roe=0.070, roa=0.028, margin=0.058, operating=0.060, turnover=0.46, leverage=2.55),
+    )
+    peers = [tepco, kansai]
+
+    stats = comparison_statistics(chubu, peers)
+    assert stats["average"]["roe"] < 0
+    assert stats["median"]["roe"] == 0.070
+    warning = comparison_outlier_warning(chubu, peers)
+    assert warning is not None
+    assert "平均値は外れ値の影響を受けています" in warning
+
+    result = build_six_frame_analysis("中部電力株式会社", "電気・ガス業", "2026-03-31", chubu, peers)
+    roe_note = next(note for note in result["財務上の強み"] if note.startswith("ROE"))
+    assert "同業中央値7.0%を上回る" in roe_note
+    assert "単純平均-1.8%" in roe_note

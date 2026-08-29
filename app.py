@@ -13,7 +13,7 @@ from edinet_client import (
 from edinet_parser import parse_financial_values, read_edinet_csv_zip
 from financial_analysis import (
     FRAME_TITLES, PeerSnapshot, build_six_frame_analysis,
-    representative_peer_codes,
+    comparison_outlier_warning, comparison_statistics, representative_peer_codes,
 )
 from financial_cache import FinancialResult, load_financial_with_fallback
 from news_analysis import MaterialResult, collect_material_events
@@ -188,6 +188,21 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
         "財務レバレッジ": [mult(row.metrics.financial_leverage, "倍") for row in comparison_rows],
     })
     st.dataframe(comparison, hide_index=True, use_container_width=True)
+    statistics = comparison_statistics(metrics, peers)
+    summary = pd.DataFrame({
+        "集計": ["単純平均", "中央値"],
+        "対象社数": [len(comparison_rows)] * 2,
+        "ROE": [pct(statistics[key]["roe"]) for key in ("average", "median")],
+        "ROA": [pct(statistics[key]["roa"]) for key in ("average", "median")],
+        "営業利益率": [pct(statistics[key]["operating_margin"]) for key in ("average", "median")],
+        "純利益率": [pct(statistics[key]["net_margin"]) for key in ("average", "median")],
+        "総資産回転率": [mult(statistics[key]["asset_turnover"]) for key in ("average", "median")],
+        "財務レバレッジ": [mult(statistics[key]["financial_leverage"], "倍") for key in ("average", "median")],
+    })
+    st.dataframe(summary, hide_index=True, use_container_width=True)
+    outlier_warning = comparison_outlier_warning(metrics, peers)
+    if outlier_warning:
+        st.warning(outlier_warning)
     if peer_errors:
         st.warning("一部の同業データを取得できませんでした: " + " / ".join(peer_errors))
 
