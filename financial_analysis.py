@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from statistics import mean
 
 from financial_metrics import Metrics
+from news_analysis import MaterialEvent
 
 
 PEER_CODES_BY_INDUSTRY = {
@@ -110,6 +111,7 @@ def build_six_frame_analysis(
     fiscal_period: str,
     metrics: Metrics,
     peers: list[PeerSnapshot],
+    events: list[MaterialEvent] | tuple[MaterialEvent, ...] = (),
 ) -> dict[str, list[str]]:
     averages = peer_averages(peers)
     comparisons = {
@@ -138,20 +140,28 @@ def build_six_frame_analysis(
     )
     leverage_note = comparisons["financial_leverage"] or "財務レバレッジは同業比較可能なデータが不足。"
     peer_names = "、".join(peer.name for peer in peers) if peers else "比較対象なし"
+    latest_materials = [
+        f"{event.item.published_date.isoformat()}「{event.item.title}」— {event.financial_impacts[0]}"
+        for event in events[:3]
+    ] or [f"最新材料を取得できなかったため、EDINET有価証券報告書（{fiscal_period}）の財務数値のみで分析している。"]
+    event_watches = list(dict.fromkeys(metric for event in events[:5] for metric in event.watch_metrics))
+    event_checks = [
+        f"「{event.item.title}」について、会社開示の続報と{event.watch_metrics[0]}を確認する。"
+        for event in events[:2]
+    ]
     return {
         "財務上の強み": strengths[:3],
         "財務上の弱み": weaknesses[:3],
         "業界構造": [structure, f"今回の同業比較対象は{peer_names}。"],
-        "最新材料": [
-            f"ニュースは使用せず、最新のEDINET有価証券報告書（{fiscal_period}）の財務数値のみを材料としている。",
-            dupont_driver(metrics, peers),
-        ],
+        "最新材料": [*latest_materials, dupont_driver(metrics, peers)],
         "今後の注目指標": [
+            *(["取得した材料に対応して、" + "、".join(event_watches[:5]) + "を追跡する。"] if event_watches else []),
             "営業利益率の持続性と、売上規模の変化が利益へ結び付いているか。",
             "総資産回転率とROAが改善しているか。",
             leverage_note,
         ],
         "投資家が確認すべき点": [
+            *event_checks,
             "単年度の指標だけでなく、過去数年の推移と会社計画との差を確認する。",
             "会計基準・決算期・事業構成の違いを踏まえ、同業比較を絶対評価にしない。",
             f"{company_name}のセグメント別利益、設備投資、資金調達方針をEDINET原本で確認する。",

@@ -16,6 +16,7 @@ from financial_analysis import (
     representative_peer_codes,
 )
 from financial_metrics import calculate_metrics
+from news_analysis import MaterialResult, collect_material_events
 
 st.set_page_config(page_title="企業財務分析", page_icon="📊", layout="wide")
 
@@ -33,6 +34,11 @@ def cached_document_list(api_key: str, target_date) -> list[dict[str, Any]]:
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def cached_document_csv(api_key: str, doc_id: str) -> bytes:
     return EdinetClient(api_key).download_csv(doc_id)
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def cached_material_events(company_name: str, security_code: str) -> MaterialResult:
+    return collect_material_events(company_name, security_code)
 
 
 def pct(x: Optional[float]) -> str:
@@ -168,8 +174,16 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     if peer_errors:
         st.warning("一部の同業データを取得できませんでした: " + " / ".join(peer_errors))
 
+    with st.spinner("直近約1年の公式発表・重要ニュースを確認中..."):
+        try:
+            material_result = cached_material_events(selected.name, selected.security_code)
+        except Exception as exc:  # ニュース障害でEDINET分析を止めない
+            material_result = MaterialResult((), (f"最新材料の取得処理: {exc}",))
+
     st.markdown("### 財務・業界分析")
-    analysis = build_six_frame_analysis(selected.name, selected.industry, fiscal_period, metrics, peers)
+    analysis = build_six_frame_analysis(
+        selected.name, selected.industry, fiscal_period, metrics, peers, material_result.events
+    )
     for index in range(0, len(FRAME_TITLES), 2):
         columns = st.columns(2)
         for column, title in zip(columns, FRAME_TITLES[index:index + 2]):
@@ -177,8 +191,24 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
                 st.markdown(f"#### {title}")
                 for note in analysis[title]:
                     st.write("• " + note)
+    st.markdown("### 最新材料の根拠（直近約1年）")
+    if material_result.events:
+        st.caption("取得した事実（発表タイトル）と、ルールベースで推定した財務への影響を分けて表示します。影響は確定事項ではありません。")
+        for event in material_result.events:
+            with st.expander(f"{event.item.published_date.isoformat()}｜{event.category}｜{event.item.title}"):
+                st.markdown(f"**取得した事実:** [{event.item.title}]({event.item.url})")
+                st.write(f"発表日: {event.item.published_date.isoformat()} / 情報源: {event.item.source_name} / 種別: {event.item.source_type}")
+                st.markdown("**財務への影響（可能性）:**")
+                for impact in event.financial_impacts:
+                    st.write("• " + impact)
+                st.write("影響候補の指標: " + "、".join(event.affected_metrics))
+                st.write("今後の確認項目: " + "、".join(event.watch_metrics))
+    else:
+        st.info("重要材料を確認できなかったため、財務分析のみ表示しています。")
+    if material_result.errors:
+        st.warning("一部の情報源を取得できませんでした（財務分析は継続）: " + " / ".join(material_result.errors))
     st.info("計算式: ROE=純利益÷平均自己資本、ROA=純利益÷平均総資産、純利益率=純利益÷売上高、営業利益率=営業利益÷売上高、総資産回転率=売上高÷平均総資産、財務レバレッジ=平均総資産÷平均自己資本。")
-    st.caption("平均残高は当期末と前期末のEDINET開示値から算出。同業比較は代表2社の最新有価証券報告書を使用し、決算期・事業構成が異なる場合があります。ニュースは未使用です。数値は投資判断ではなく学習・企業分析用の概算です。")
+    st.caption("平均残高は当期末と前期末のEDINET開示値から算出。同業比較は代表2社の最新有価証券報告書を使用。最新材料は公式発表・許可リスト化した報道の見出しを根拠に、財務への影響可能性をルールベースで整理しています。数値・分析は投資判断ではなく学習用の概算です。")
 
 st.divider()
 st.caption(f"企業情報: [金融庁 EDINETコードリスト]({CODE_LIST_URL}) / 財務情報: 金融庁 EDINET API Version 2")

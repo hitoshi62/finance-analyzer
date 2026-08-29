@@ -1,4 +1,6 @@
 from financial_analysis import PeerSnapshot, build_six_frame_analysis, dupont_driver, representative_peer_codes
+from news_analysis import MaterialEvent, NewsItem
+from datetime import date
 from financial_metrics import Metrics
 
 
@@ -38,4 +40,16 @@ def test_verified_toyota_and_chubu_metrics_render_all_sections():
         assert list(result) == list((
             "財務上の強み", "財務上の弱み", "業界構造", "最新材料", "今後の注目指標", "投資家が確認すべき点"
         ))
-        assert "ニュースは使用せず" in result["最新材料"][0]
+        assert "最新材料を取得できなかった" in result["最新材料"][0]
+
+
+def test_events_update_three_material_dependent_frames():
+    event = MaterialEvent(
+        NewsItem("自己株式取得のお知らせ", date(2026, 8, 1), "https://example.jp", "公式IR", "会社公式IR・適時開示相当"),
+        "株主還元・資本政策", ("財務レバレッジ", "ROE"),
+        ("自己資本が減る可能性。",), ("自己資本", "有利子負債"),
+    )
+    result = build_six_frame_analysis("対象社", "輸送用機器", "2026-03-31", metrics(), [], [event])
+    assert "自己株式取得" in result["最新材料"][0]
+    assert "自己資本" in result["今後の注目指標"][0]
+    assert "会社開示の続報" in result["投資家が確認すべき点"][0]
