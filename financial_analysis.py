@@ -95,6 +95,23 @@ def comparison_outlier_warning(metrics: Metrics, peers: list[PeerSnapshot]) -> s
     return None
 
 
+def _display_number(value: float, percent: bool) -> float:
+    """Round to the same precision used by the comparison display."""
+    scale, decimals = (100, 1) if percent else (1, 2)
+    return float(f"{value * scale:.{decimals}f}")
+
+
+def _display_comparison(own: float, benchmark: float, percent: bool) -> int:
+    displayed_own = _display_number(own, percent)
+    displayed_benchmark = _display_number(benchmark, percent)
+    return (displayed_own > displayed_benchmark) - (displayed_own < displayed_benchmark)
+
+
+def _format_comparison_value(value: float, percent: bool) -> str:
+    decimals = 1 if percent else 2
+    return f"{_display_number(value, percent):.{decimals}f}{'%' if percent else ''}"
+
+
 def dupont_driver(metrics: Metrics, peers: list[PeerSnapshot]) -> str:
     components = (
         ("純利益率", "net_margin"),
@@ -115,16 +132,22 @@ def dupont_driver(metrics: Metrics, peers: list[PeerSnapshot]) -> str:
     if not differences:
         return f"DuPont概算は{product_text}。比較可能な同業データが不足しているため、主因は単独数値で確認する必要がある。"
     _, label, own, peer = max(differences)
-    direction = "上回る" if own >= peer else "下回る"
     if label == "純利益率":
-        own_text, peer_text = f"{own * 100:.1f}%", f"{peer * 100:.1f}%"
+        own_text, peer_text = _format_comparison_value(own, True), _format_comparison_value(peer, True)
+        order = _display_comparison(own, peer, True)
     elif label == "総資産回転率":
-        own_text, peer_text = f"{own:.2f}回", f"{peer:.2f}回"
+        own_text, peer_text = _format_comparison_value(own, False) + "回", _format_comparison_value(peer, False) + "回"
+        order = _display_comparison(own, peer, False)
     else:
-        own_text, peer_text = f"{own:.2f}倍", f"{peer:.2f}倍"
+        own_text, peer_text = _format_comparison_value(own, False) + "倍", _format_comparison_value(peer, False) + "倍"
+        order = _display_comparison(own, peer, False)
+    comparison_text = (
+        f"同業中央値{peer_text}と同水準。" if order == 0
+        else f"同業中央値{peer_text}を{'上回る' if order > 0 else '下回る'}。"
+    )
     return (
         f"DuPont概算は{product_text}。同業中央値との差が最も大きい主因は{label}で、"
-        f"自社{own_text}に対し同業中央値{peer_text}と、中央値を{direction}。"
+        f"自社{own_text}に対し{comparison_text}"
     )
 
 
@@ -132,13 +155,16 @@ def _comparison_note(label: str, own: float | None, average: float | None, middl
     benchmark = middle if middle is not None else average
     if own is None or benchmark is None:
         return None
-    unit = "%" if percent else ""
-    scale = 100 if percent else 1
-    direction = "上回る" if own >= benchmark else "下回る"
-    average_text = "算出不可" if average is None else f"{average * scale:.1f}{unit}"
-    middle_text = "算出不可" if middle is None else f"{middle * scale:.1f}{unit}"
+    own_text = _format_comparison_value(own, percent)
+    average_text = "算出不可" if average is None else _format_comparison_value(average, percent)
+    middle_text = "算出不可" if middle is None else _format_comparison_value(middle, percent)
+    order = _display_comparison(own, benchmark, percent)
+    comparison_text = (
+        f"同業中央値{middle_text}と同水準" if order == 0
+        else f"同業中央値{middle_text}を{'上回る' if order > 0 else '下回る'}"
+    )
     return (
-        f"{label}は{own * scale:.1f}{unit}で、同業中央値{middle_text}を{direction}"
+        f"{label}は{own_text}で、{comparison_text}"
         f"（単純平均{average_text}）。"
     )
 
@@ -167,7 +193,8 @@ def build_six_frame_analysis(
         own = getattr(metrics, field)
         benchmark = medians[field] if medians[field] is not None else averages[field]
         if note and own is not None and benchmark is not None:
-            (strengths if own >= benchmark else weaknesses).append(note)
+            percent = field != "asset_turnover"
+            (strengths if _display_comparison(own, benchmark, percent) >= 0 else weaknesses).append(note)
     if not strengths:
         strengths.append("比較可能な主要指標では明確な同業中央値超過がない。財務の安定性や事業別内訳を追加確認したい。")
     if not weaknesses:

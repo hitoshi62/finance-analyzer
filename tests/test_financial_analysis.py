@@ -83,3 +83,22 @@ def test_chubu_comparison_uses_median_when_tepco_is_loss_making_outlier():
     roe_note = next(note for note in result["財務上の強み"] if note.startswith("ROE"))
     assert "同業中央値7.0%を上回る" in roe_note
     assert "単純平均-1.8%" in roe_note
+
+
+def test_rounded_equal_values_are_described_as_same_level():
+    target = metrics(roe=0.07654, roa=0.01, margin=0.07654, operating=0.01, turnover=0.4849)
+    peers = [
+        PeerSnapshot("同業A", "0001", "2026-03-31", metrics(roe=0.07651, margin=0.07651, turnover=0.4841)),
+        PeerSnapshot("同業B", "0002", "2026-03-31", metrics(roe=0.07652, margin=0.07652, turnover=0.4842)),
+    ]
+    result = build_six_frame_analysis("対象社", "輸送用機器", "2026-03-31", target, peers)
+    notes = result["財務上の強み"] + result["財務上の弱み"]
+    roe_note = next(note for note in notes if note.startswith("ROE"))
+    turnover_note = next(note for note in notes if note.startswith("総資産回転率"))
+    assert "ROEは7.7%で、同業中央値7.7%と同水準" in roe_note
+    assert "上回る" not in roe_note and "下回る" not in roe_note
+    assert "総資産回転率は0.48で、同業中央値0.48と同水準" in turnover_note
+
+    dupont = dupont_driver(target, peers)
+    assert "同業中央値0.48回と同水準" in dupont
+    assert "上回る" not in dupont and "下回る" not in dupont
