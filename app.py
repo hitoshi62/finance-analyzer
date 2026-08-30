@@ -12,7 +12,7 @@ from edinet_client import (
 )
 from edinet_parser import parse_financial_values, read_edinet_csv_zip
 from financial_analysis import (
-    FRAME_TITLES, PeerSnapshot, build_six_frame_analysis,
+    PeerSnapshot, build_six_frame_analysis,
     classify_business_model, comparison_outlier_warning, comparison_statistics,
     industry_comparison_caution, roe_engine_explanation, select_peer_candidates,
 )
@@ -177,8 +177,12 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     classification = classify_business_model(metrics, peers)
     st.write(f"**主分類:** {classification.primary}")
     st.write("**補助特性:** " + (" / ".join(classification.characteristics) or "なし"))
-    for note in roe_engine_explanation(metrics, peers):
-        st.write("• " + note)
+    roe_notes = roe_engine_explanation(metrics, peers)
+    if len(roe_notes) > 1:
+        st.write("• " + roe_notes[1])
+    with st.expander("DuPont分析を詳しく見る"):
+        for note in (roe_notes[:1] + roe_notes[2:]):
+            st.write("• " + note)
 
     st.markdown(f"### 財務データ（{fiscal_period}）")
     table = pd.DataFrame({
@@ -241,18 +245,39 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     analysis = build_six_frame_analysis(
         selected.name, selected.industry, fiscal_period, metrics, peers, material_result.events
     )
-    for index in range(0, len(FRAME_TITLES), 2):
-        columns = st.columns(2)
-        for column, title in zip(columns, FRAME_TITLES[index:index + 2]):
-            with column:
-                st.markdown(f"#### {title}")
-                for note in analysis[title]:
-                    st.write("• " + note)
+    key_points = [
+        analysis["財務上の強み"][0],
+        analysis["財務上の弱み"][0],
+        analysis["業界構造"][0],
+    ]
+    st.caption("まず押さえたい要点")
+    for note in key_points:
+        st.write("• " + note)
+
+    with st.expander("詳しい財務・業界分析"):
+        for title in ("財務上の強み", "財務上の弱み", "業界構造", "最新材料"):
+            st.markdown(f"#### {title}")
+            for note in analysis[title]:
+                st.write("• " + note)
+
+    with st.expander("今後の注目指標"):
+        for note in analysis["今後の注目指標"]:
+            st.write("• " + note)
+
+    with st.expander("投資家が確認すべき点"):
+        for note in analysis["投資家が確認すべき点"]:
+            st.write("• " + note)
+
     st.markdown("### 最新材料の根拠（直近約1年）")
     if material_result.events:
-        st.caption("取得した事実（発表タイトル）と、ルールベースで推定した財務への影響を分けて表示します。影響は確定事項ではありません。")
-        for event in material_result.events:
-            with st.expander(f"{event.item.published_date.isoformat()}｜{event.category}｜{event.item.title}"):
+        st.caption("主な材料: " + " / ".join(event.item.title for event in material_result.events[:2]))
+    with st.expander("最新材料の根拠"):
+        if material_result.events:
+            st.caption("取得した事実と、ルールベースで推定した財務への影響を分けて表示します。影響は確定事項ではありません。")
+            for index, event in enumerate(material_result.events):
+                if index:
+                    st.divider()
+                st.markdown(f"#### {event.item.published_date.isoformat()}｜{event.category}")
                 st.markdown(f"**取得した事実:** [{event.item.title}]({event.item.url})")
                 st.write(f"発表日: {event.item.published_date.isoformat()} / 情報源: {event.item.source_name} / 種別: {event.item.source_type}")
                 st.markdown("**財務への影響（可能性）:**")
@@ -260,8 +285,8 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
                     st.write("• " + impact)
                 st.write("影響候補の指標: " + "、".join(event.affected_metrics))
                 st.write("今後の確認項目: " + "、".join(event.watch_metrics))
-    else:
-        st.info("重要材料を確認できなかったため、財務分析のみ表示しています。")
+        else:
+            st.info("重要材料を確認できなかったため、財務分析のみ表示しています。")
     if material_result.errors:
         st.warning("一部の情報源を取得できませんでした（財務分析は継続）: " + " / ".join(material_result.errors))
     st.info("計算式: ROE=純利益÷平均自己資本、ROA=純利益÷平均総資産、純利益率=純利益÷売上高、営業利益率=営業利益÷売上高、総資産回転率=売上高÷平均総資産、財務レバレッジ=平均総資産÷平均自己資本。")
