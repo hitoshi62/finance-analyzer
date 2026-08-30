@@ -1,6 +1,8 @@
 from financial_analysis import (
     PeerSnapshot, build_six_frame_analysis, comparison_outlier_warning,
-    comparison_statistics, dupont_driver, representative_peer_codes,
+    classify_business_model, comparison_statistics, dupont_driver,
+    industry_comparison_caution, representative_peer_codes,
+    roe_engine_explanation, select_peer_candidates,
 )
 from news_analysis import MaterialEvent, NewsItem
 from datetime import date
@@ -16,6 +18,36 @@ def test_representative_peers_are_industry_specific():
     assert representative_peer_codes("輸送用機器", "72030") == ("7267", "7201")
     assert representative_peer_codes("電気・ガス業", "95020") == ("9501", "9503")
     assert representative_peer_codes("不明", "0000") == ()
+
+
+def test_kanematsu_uses_business_content_peers_with_reasons():
+    candidates = select_peer_candidates("卸売業", "80200")
+    assert tuple(code for code, _ in candidates) == ("8001", "8058")
+    assert all("総合商社" in reason for _, reason in candidates)
+
+
+def test_business_model_separates_primary_from_auxiliary_traits():
+    target = metrics(margin=0.04, turnover=1.5, leverage=3.5)
+    classification = classify_business_model(target, [])
+    assert classification.primary == "薄利高回転型"
+    assert classification.characteristics == ("レバレッジ活用型",)
+    assert "高回転型" not in classification.characteristics
+
+
+def test_trading_company_comparison_caution_explains_accounting_differences():
+    caution = industry_comparison_caution("卸売業")
+    assert caution is not None
+    assert "IFRS" in caution and "収益" in caution
+    assert "持分法投資利益" in caution and "事業ポートフォリオ" in caution
+    assert industry_comparison_caution("輸送用機器") is None
+
+
+def test_beginner_explanations_cover_leverage_and_margin_gap_without_overclaiming_interest():
+    target = metrics(roe=0.15, roa=0.04, margin=0.04, operating=0.09, leverage=3.75)
+    text = " ".join(roe_engine_explanation(target, []))
+    assert "財務レバレッジ" in text and "ROEが押し上げられ得る" in text
+    assert "支払利息だけでなく" in text
+    assert "税金" in text and "営業外損益" in text
 
 
 def test_dupont_driver_explains_largest_peer_difference():

@@ -13,7 +13,8 @@ from edinet_client import (
 from edinet_parser import parse_financial_values, read_edinet_csv_zip
 from financial_analysis import (
     FRAME_TITLES, PeerSnapshot, build_six_frame_analysis,
-    comparison_outlier_warning, comparison_statistics, representative_peer_codes,
+    classify_business_model, comparison_outlier_warning, comparison_statistics,
+    industry_comparison_caution, roe_engine_explanation, select_peer_candidates,
 )
 from financial_cache import FinancialResult, load_financial_with_fallback
 from news_analysis import MaterialResult, collect_material_events
@@ -106,15 +107,17 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
             d = asdict(metrics)
             peers: list[PeerSnapshot] = []
             peer_errors: list[str] = []
-            peer_codes = representative_peer_codes(selected.industry, selected.security_code)
-            if not peer_codes:
-                peer_codes = tuple(
-                    company.security_code[:4]
+            peer_candidates = select_peer_candidates(selected.industry, selected.security_code)
+            if not peer_candidates:
+                peer_candidates = tuple(
+                    (company.security_code[:4],
+                     f"事業内容ルール未登録のためEDINET業種「{selected.industry}」一致から暫定選定")
                     for company in companies
                     if company.industry == selected.industry
                     and company.edinet_code != selected.edinet_code
                 )[:2]
-            for peer_code in peer_codes:
+            peer_reasons = dict(peer_candidates)
+            for peer_code, _reason in peer_candidates:
                 candidates = find_companies(companies, peer_code)
                 if not candidates:
                     peer_errors.append(f"証券コード{peer_code}: 企業を特定できません")
@@ -166,6 +169,17 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     c5.metric("総資産回転率", mult(d["asset_turnover"]))
     c6.metric("財務レバレッジ", mult(d["financial_leverage"], "倍"))
 
+    st.markdown("### ROEの作られ方（DuPont分解）")
+    st.write(
+        f"**{pct(d['net_margin'])} × {mult(d['asset_turnover'])} × "
+        f"{mult(d['financial_leverage'], '倍')} = {pct(d['roe'])}（概算）**"
+    )
+    classification = classify_business_model(metrics, peers)
+    st.write(f"**主分類:** {classification.primary}")
+    st.write("**補助特性:** " + (" / ".join(classification.characteristics) or "なし"))
+    for note in roe_engine_explanation(metrics, peers):
+        st.write("• " + note)
+
     st.markdown(f"### 財務データ（{fiscal_period}）")
     table = pd.DataFrame({
         "項目": ["売上高", "営業利益", "純利益", "平均総資産", "平均自己資本"],
@@ -175,6 +189,9 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     st.dataframe(table, hide_index=True, use_container_width=True)
 
     st.markdown("### 同業他社比較")
+    comparison_caution = industry_comparison_caution(selected.industry)
+    if comparison_caution:
+        st.warning(comparison_caution)
     comparison_rows = [PeerSnapshot(selected.name, selected.security_code[:4], fiscal_period, metrics), *peers]
     comparison = pd.DataFrame({
         "企業": [row.name for row in comparison_rows],
@@ -188,6 +205,14 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
         "財務レバレッジ": [mult(row.metrics.financial_leverage, "倍") for row in comparison_rows],
     })
     st.dataframe(comparison, hide_index=True, use_container_width=True)
+    with st.expander("同業候補の選定理由"):
+        if peer_candidates:
+            peer_names_by_code = {peer.security_code: peer.name for peer in peers}
+            for peer_code, reason in peer_candidates:
+                name = peer_names_by_code.get(peer_code, "取得できなかった候補")
+                st.write(f"• {name}（{peer_code}）: {reason}")
+        else:
+            st.write("比較可能な同業候補を取得できませんでした。")
     statistics = comparison_statistics(metrics, peers)
     summary = pd.DataFrame({
         "集計": ["単純平均", "中央値"],
@@ -240,7 +265,7 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     if material_result.errors:
         st.warning("一部の情報源を取得できませんでした（財務分析は継続）: " + " / ".join(material_result.errors))
     st.info("計算式: ROE=純利益÷平均自己資本、ROA=純利益÷平均総資産、純利益率=純利益÷売上高、営業利益率=営業利益÷売上高、総資産回転率=売上高÷平均総資産、財務レバレッジ=平均総資産÷平均自己資本。")
-    st.caption("平均残高は当期末と前期末のEDINET開示値から算出。同業比較は代表2社の最新有価証券報告書を使用。最新材料は公式発表・許可リスト化した報道の見出しを根拠に、財務への影響可能性をルールベースで整理しています。数値・分析は投資判断ではなく学習用の概算です。")
+    st.caption("平均残高は当期末と前期末のEDINET開示値から算出。同業比較は事業内容ルールを優先し、未登録時はEDINET業種から暫定選定した代表2社の最新有価証券報告書を使用。最新材料は公式発表・許可リスト化した報道の見出しを根拠に、財務への影響可能性をルールベースで整理しています。数値・分析は投資判断ではなく学習用の概算です。")
 
 st.divider()
 st.caption(f"企業情報: [金融庁 EDINETコードリスト]({CODE_LIST_URL}) / 財務情報: 金融庁 EDINET API Version 2")

@@ -11,6 +11,13 @@ from news_analysis import MaterialEvent
 PEER_CODES_BY_INDUSTRY = {
     "輸送用機器": ("7267", "7201"),
     "電気・ガス業": ("9501", "9503"),
+    "卸売業": ("8001", "8058"),
+}
+
+# EDINETの業種は広いため、事業内容が明確な代表企業は証券コード単位で補正する。
+BUSINESS_PEERS_BY_CODE = {
+    "8020": (("8001", "総合商社として事業領域・収益構造が近い"),
+             ("8058", "総合商社として事業ポートフォリオが近い")),  # 兼松
 }
 
 INDUSTRY_STRUCTURES = {
@@ -21,6 +28,14 @@ INDUSTRY_STRUCTURES = {
     "電気・ガス業": (
         "発電・送配電設備を長期保有する資産集約型産業で、総資産回転率は構造的に低くなりやすい。"
         "燃料価格、為替、電源構成、規制料金、原子力設備の稼働状況が利益とキャッシュフローを左右し、負債活用も比較的大きい。"
+    ),
+}
+
+INDUSTRY_COMPARISON_CAUTIONS = {
+    "卸売業": (
+        "商社はIFRSと日本基準などの会計基準、収益を総額・純額のどちらで認識するか、持分法投資利益の比重、"
+        "事業ポートフォリオの違いが大きいため、営業利益率や総資産回転率の単純比較には注意が必要です。"
+        "数値の高低だけでなく、各社の会計方針とセグメント構成を確認してください。"
     ),
 }
 
@@ -42,9 +57,93 @@ class PeerSnapshot:
     metrics: Metrics
 
 
+@dataclass(frozen=True)
+class BusinessModelClassification:
+    primary: str
+    characteristics: tuple[str, ...] = ()
+
+
 def representative_peer_codes(industry: str, own_security_code: str) -> tuple[str, ...]:
+    return tuple(code for code, _ in select_peer_candidates(industry, own_security_code))
+
+
+def select_peer_candidates(industry: str, own_security_code: str) -> tuple[tuple[str, str], ...]:
+    """Return peer codes with an auditable business-relevance reason."""
     own = own_security_code[:4]
-    return tuple(code for code in PEER_CODES_BY_INDUSTRY.get(industry, ()) if code != own)
+    if own in BUSINESS_PEERS_BY_CODE:
+        return BUSINESS_PEERS_BY_CODE[own]
+    return tuple(
+        (code, f"EDINET業種「{industry}」の代表企業として選定（事業構成の差は要確認）")
+        for code in PEER_CODES_BY_INDUSTRY.get(industry, ()) if code != own
+    )
+
+
+def classify_business_model(metrics: Metrics, peers: list[PeerSnapshot]) -> BusinessModelClassification:
+    """Choose one primary ROE model and retain non-overlapping auxiliary traits."""
+    medians = comparison_statistics(metrics, peers)["median"]
+    margin, turnover, leverage = metrics.net_margin, metrics.asset_turnover, metrics.financial_leverage
+    margin_base = medians["net_margin"]
+    turnover_base = medians["asset_turnover"]
+    leverage_base = medians["financial_leverage"]
+    high_margin = margin is not None and (margin >= 0.10 or margin_base is not None and margin > margin_base * 1.2)
+    high_turnover = turnover is not None and (turnover >= 1.0 or turnover_base is not None and turnover > turnover_base * 1.2)
+    high_leverage = leverage is not None and (leverage >= 3.0 or leverage_base is not None and leverage > leverage_base * 1.2)
+    low_margin = margin is not None and margin >= 0 and margin <= 0.05
+    if low_margin and high_turnover:
+        primary = "薄利高回転型"
+    elif high_margin:
+        primary = "高利益率型"
+    elif high_turnover:
+        primary = "高回転型"
+    elif high_leverage:
+        primary = "レバレッジ型"
+    else:
+        primary = "バランス型"
+
+    characteristics: list[str] = []
+    if high_leverage and primary != "レバレッジ型":
+        characteristics.append("レバレッジ活用型")
+    if high_margin and primary != "高利益率型":
+        characteristics.append("利益率優位")
+    return BusinessModelClassification(primary, tuple(characteristics))
+
+
+def business_model_labels(metrics: Metrics, peers: list[PeerSnapshot]) -> list[str]:
+    """Compatibility helper returning the primary model followed by auxiliary traits."""
+    classification = classify_business_model(metrics, peers)
+    return [classification.primary, *classification.characteristics]
+
+
+def industry_comparison_caution(industry: str) -> str | None:
+    return INDUSTRY_COMPARISON_CAUTIONS.get(industry)
+
+
+def roe_engine_explanation(metrics: Metrics, peers: list[PeerSnapshot]) -> list[str]:
+    classification = classify_business_model(metrics, peers)
+    characteristic_text = (
+        "、補助特性: " + "・".join(classification.characteristics)
+        if classification.characteristics else "、補助特性: なし"
+    )
+    notes = [f"収益モデル分類 — 主分類: {classification.primary}{characteristic_text}。", dupont_driver(metrics, peers)]
+    if metrics.roe is not None and metrics.roa is not None:
+        gap = metrics.roe - metrics.roa
+        if metrics.financial_leverage is not None and abs(gap) >= 0.03:
+            notes.append(
+                f"ROEとROAの差は{gap * 100:.1f}ポイント。会社全体の資産効率を示すROAに対し、ROEは自己資本を基準にするため、"
+                f"財務レバレッジ{metrics.financial_leverage:.2f}倍の影響が大きい。借入等を含む資本構成でROEが押し上げられ得る一方、返済・金利負担のリスクも確認したい。"
+            )
+    if metrics.operating_margin is not None and metrics.net_margin is not None:
+        gap = metrics.operating_margin - metrics.net_margin
+        if gap > 0.005:
+            notes.append(
+                f"営業利益率から純利益率まで{gap * 100:.1f}ポイント低下している。支払利息だけでなく、税金、営業外損益、特別損益などが"
+                "利益を減らした可能性があるため、損益計算書の内訳を確認したい。"
+            )
+        elif gap < -0.005:
+            notes.append(
+                f"純利益率が営業利益率を{-gap * 100:.1f}ポイント上回る。受取利息・配当、持分法利益、特別利益、税効果などの可能性があり、内訳確認が必要。"
+            )
+    return notes
 
 
 COMPARISON_FIELDS = (
@@ -204,22 +303,24 @@ def build_six_frame_analysis(
         industry,
         "同一業種でも事業構成や会計基準が異なるため、利益率・資産効率・資本構成を分けて比較する必要がある。",
     )
+    comparison_caution = industry_comparison_caution(industry)
     leverage_note = comparisons["financial_leverage"] or "財務レバレッジは同業比較可能なデータが不足。"
     peer_names = "、".join(peer.name for peer in peers) if peers else "比較対象なし"
     latest_materials = [
         f"{event.item.published_date.isoformat()}「{event.item.title}」— {event.financial_impacts[0]}"
         for event in events[:3]
     ] or [f"最新材料を取得できなかったため、EDINET有価証券報告書（{fiscal_period}）の財務数値のみで分析している。"]
+    engine_notes = roe_engine_explanation(metrics, peers)
     event_watches = list(dict.fromkeys(metric for event in events[:5] for metric in event.watch_metrics))
     event_checks = [
         f"「{event.item.title}」について、会社開示の続報と{event.watch_metrics[0]}を確認する。"
         for event in events[:2]
     ]
     return {
-        "財務上の強み": strengths[:3],
+        "財務上の強み": [*strengths, *engine_notes],
         "財務上の弱み": weaknesses[:3],
-        "業界構造": [structure, f"今回の同業比較対象は{peer_names}。"],
-        "最新材料": [*latest_materials, dupont_driver(metrics, peers)],
+        "業界構造": [structure, f"今回の同業比較対象は{peer_names}。", *([comparison_caution] if comparison_caution else [])],
+        "最新材料": latest_materials,
         "今後の注目指標": [
             *(["取得した材料に対応して、" + "、".join(event_watches[:5]) + "を追跡する。"] if event_watches else []),
             "営業利益率の持続性と、売上規模の変化が利益へ結び付いているか。",
