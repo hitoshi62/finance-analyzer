@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -11,6 +11,10 @@ from edinet_client import (
     find_latest_annual_filing, load_company_list, read_api_key,
 )
 from edinet_parser import parse_financial_values, read_edinet_csv_zip
+from display_formatting import (
+    format_money as money, format_multiple as mult, format_percent as pct,
+    optional_attribute,
+)
 from company_profile import (
     business_profile, financial_analysis_type, find_parent_suggestion,
     resolve_parent_company,
@@ -44,27 +48,6 @@ def cached_document_csv(api_key: str, doc_id: str) -> bytes:
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def cached_material_events(company_name: str, security_code: str) -> MaterialResult:
     return collect_material_events(company_name, security_code)
-
-
-def pct(x: Optional[float]) -> str:
-    return "データ取得不可" if x is None else f"{x * 100:.1f}%"
-
-
-def mult(x: Optional[float], unit: str = "回") -> str:
-    return "データ取得不可" if x is None else f"{x:.2f}{unit}"
-
-
-def money(x: Optional[float], currency: str) -> str:
-    if x is None:
-        return "データ取得不可"
-    ax = abs(x)
-    if ax >= 1e12:
-        return f"{x/1e12:.2f}兆 {currency}".strip()
-    if ax >= 1e8:
-        return f"{x/1e8:.1f}億 {currency}".strip()
-    if ax >= 1e6:
-        return f"{x/1e6:.1f}百万 {currency}".strip()
-    return f"{x:,.0f} {currency}".strip()
 
 
 def load_financial_result(api_key: str, company: Company) -> FinancialResult:
@@ -205,12 +188,15 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
         c1, c2, c3 = st.columns(3)
         c1.metric("ROE", pct(d["roe"]))
         c2.metric("ROA", pct(d["roa"]))
-        c3.metric("自己資本比率", pct(values.bank_equity_ratio))
+        c3.metric("自己資本比率", pct(optional_attribute(values, "bank_equity_ratio")))
+        currency = optional_attribute(values, "currency") or ""
         bank_table = pd.DataFrame({
             "主要KPI": ["総資産", "純利益", "経常利益", "貸出金", "預金", "利ざや関連指標"],
-            "値": [money(values.current_assets, values.currency), money(values.net_income, values.currency),
-                   money(values.ordinary_income, values.currency), money(values.loans, values.currency),
-                   money(values.deposits, values.currency), "データ取得不可"],
+            "値": [money(optional_attribute(values, "current_assets"), currency),
+                   money(optional_attribute(values, "net_income"), currency),
+                   money(optional_attribute(values, "ordinary_income"), currency),
+                   money(optional_attribute(values, "loans"), currency),
+                   money(optional_attribute(values, "deposits"), currency), "データ取得不可"],
         })
         st.dataframe(bank_table, hide_index=True, use_container_width=True)
     else:
