@@ -11,6 +11,10 @@ from edinet_client import (
     find_latest_annual_filing, load_company_list, read_api_key,
 )
 from edinet_parser import parse_financial_values, read_edinet_csv_zip
+from company_profile import (
+    business_profile, financial_analysis_type, find_parent_suggestion,
+    resolve_parent_company,
+)
 from financial_analysis import (
     PeerSnapshot, build_six_frame_analysis,
     classify_business_model, comparison_outlier_warning, comparison_statistics,
@@ -43,16 +47,16 @@ def cached_material_events(company_name: str, security_code: str) -> MaterialRes
 
 
 def pct(x: Optional[float]) -> str:
-    return "取得不可" if x is None else f"{x * 100:.1f}%"
+    return "データ取得不可" if x is None else f"{x * 100:.1f}%"
 
 
 def mult(x: Optional[float], unit: str = "回") -> str:
-    return "取得不可" if x is None else f"{x:.2f}{unit}"
+    return "データ取得不可" if x is None else f"{x:.2f}{unit}"
 
 
 def money(x: Optional[float], currency: str) -> str:
     if x is None:
-        return "取得不可"
+        return "データ取得不可"
     ax = abs(x)
     if ax >= 1e12:
         return f"{x/1e12:.2f}兆 {currency}".strip()
@@ -96,9 +100,22 @@ elif len(matches) > 1:
     labels = {f"{company.name}（証券コード {company.security_code[:4]} / {company.edinet_code}）": company for company in matches}
     selected = labels[st.selectbox("候補企業を選択", list(labels))]
 elif query.strip():
-    st.warning("該当する日本の上場企業が見つかりません。正式名称、4桁証券コード、EDINETコードを確認してください。")
+    parent_suggestion = find_parent_suggestion(query)
+    if parent_suggestion:
+        st.info(
+            f"{parent_suggestion.subsidiary_name}は非上場企業です。\n\n"
+            f"上場親会社『{parent_suggestion.parent_name}』を分析しますか？"
+        )
+        if st.checkbox("上場親会社を分析対象にする", key="use_listed_parent"):
+            selected = resolve_parent_company(companies, parent_suggestion)
+            if selected is None:
+                st.warning("EDINET企業一覧から上場親会社を特定できませんでした。")
+    else:
+        st.warning("該当する日本の上場企業が見つかりません。正式名称、4桁証券コード、EDINETコードを確認してください。")
 
 if st.button("分析する", type="primary", use_container_width=True, disabled=selected is None):
+    profile = business_profile(selected)
+    analysis_type = financial_analysis_type(selected, profile)
     try:
         api_key = read_api_key(st.secrets)
         with st.spinner("EDINETから対象企業と同業他社の有価証券報告書を検索・取得中..."):
@@ -107,8 +124,8 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
             d = asdict(metrics)
             peers: list[PeerSnapshot] = []
             peer_errors: list[str] = []
-            peer_candidates = select_peer_candidates(selected.industry, selected.security_code)
-            if not peer_candidates:
+            peer_candidates = () if analysis_type != "general" else select_peer_candidates(selected.industry, selected.security_code)
+            if not peer_candidates and analysis_type == "general":
                 peer_candidates = tuple(
                     (company.security_code[:4],
                      f"事業内容ルール未登録のためEDINET業種「{selected.industry}」一致から暫定選定")
@@ -142,6 +159,7 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
         st.stop()
 
     st.subheader(f"{selected.name}（証券コード {selected.security_code[:4]} / {selected.edinet_code}）")
+    st.write(profile.description)
     if financial_result.from_cache:
         st.warning(
             "EDINET最新取得に失敗したため、前回取得データを使用しています。"
@@ -160,40 +178,63 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
     st.info(f"対象決算期: **{fiscal_period}** / {accounting} / {basis}")
     st.markdown(f"データ取得元: 金融庁 EDINET「{filing.doc_description}」（書類管理番号 [{filing.doc_id}]({filing.source_url})、提出日時 {filing.submit_datetime}）")
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("ROE", pct(d["roe"]))
-    c2.metric("ROA", pct(d["roa"]))
-    c3.metric("純利益率", pct(d["net_margin"]))
-    c4, c5, c6 = st.columns(3)
-    c4.metric("営業利益率", pct(d["operating_margin"]))
-    c5.metric("総資産回転率", mult(d["asset_turnover"]))
-    c6.metric("財務レバレッジ", mult(d["financial_leverage"], "倍"))
+    if analysis_type == "general":
+        c1, c2, c3 = st.columns(3)
+        c1.metric("ROE", pct(d["roe"]))
+        c2.metric("ROA", pct(d["roa"]))
+        c3.metric("純利益率", pct(d["net_margin"]))
+        c4, c5, c6 = st.columns(3)
+        c4.metric("営業利益率", pct(d["operating_margin"]))
+        c5.metric("総資産回転率", mult(d["asset_turnover"]))
+        c6.metric("財務レバレッジ", mult(d["financial_leverage"], "倍"))
 
-    st.markdown("### ROEの作られ方（DuPont分解）")
-    st.write(
-        f"**{pct(d['net_margin'])} × {mult(d['asset_turnover'])} × "
-        f"{mult(d['financial_leverage'], '倍')} = {pct(d['roe'])}（概算）**"
-    )
-    classification = classify_business_model(metrics, peers)
-    st.write(f"**主分類:** {classification.primary}")
-    st.write("**補助特性:** " + (" / ".join(classification.characteristics) or "なし"))
-    roe_notes = roe_engine_explanation(metrics, peers)
-    if len(roe_notes) > 1:
-        st.write("• " + roe_notes[1])
-    with st.expander("DuPont分析を詳しく見る"):
-        for note in (roe_notes[:1] + roe_notes[2:]):
-            st.write("• " + note)
+        st.markdown("### ROEの作られ方（DuPont分解）")
+        st.write(f"**{pct(d['net_margin'])} × {mult(d['asset_turnover'])} × {mult(d['financial_leverage'], '倍')} = {pct(d['roe'])}（概算）**")
+        classification = classify_business_model(metrics, peers)
+        st.write(f"**主分類:** {classification.primary}")
+        st.write("**補助特性:** " + (" / ".join(classification.characteristics) or "なし"))
+        roe_notes = roe_engine_explanation(metrics, peers)
+        if len(roe_notes) > 1:
+            st.write("• " + roe_notes[1])
+        with st.expander("DuPont分析を詳しく見る"):
+            for note in (roe_notes[:1] + roe_notes[2:]):
+                st.write("• " + note)
+    elif analysis_type == "bank":
+        st.markdown("### 金融業専用分析")
+        st.caption("金融業は預貸・運用構造が一般企業と異なるため、一般企業用DuPont分析の対象外です。")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("ROE", pct(d["roe"]))
+        c2.metric("ROA", pct(d["roa"]))
+        c3.metric("自己資本比率", pct(values.bank_equity_ratio))
+        bank_table = pd.DataFrame({
+            "主要KPI": ["総資産", "純利益", "経常利益", "貸出金", "預金", "利ざや関連指標"],
+            "値": [money(values.current_assets, values.currency), money(values.net_income, values.currency),
+                   money(values.ordinary_income, values.currency), money(values.loans, values.currency),
+                   money(values.deposits, values.currency), "データ取得不可"],
+        })
+        st.dataframe(bank_table, hide_index=True, use_container_width=True)
+    else:
+        financial_labels = {
+            "securities": ("証券業", "証券業専用KPIは今後対応予定です。"),
+            "insurance": ("保険業", "保険業専用KPIは今後対応予定です。"),
+            "financial": ("その他金融業", "その他金融業専用KPIは今後対応予定です。"),
+        }
+        label, message = financial_labels[analysis_type]
+        st.markdown(f"### {label}専用分析")
+        st.info(message + " 銀行用KPIは流用せず、取得できない値の推定も行いません。")
 
-    st.markdown(f"### 財務データ（{fiscal_period}）")
-    table = pd.DataFrame({
-        "項目": ["売上高", "営業利益", "純利益", "平均総資産", "平均自己資本"],
-        "値": [money(d[key], values.currency) for key in ("revenue", "operating_income", "net_income", "avg_assets", "avg_equity")],
-        "対象年度": [fiscal_period] * 5,
-    })
-    st.dataframe(table, hide_index=True, use_container_width=True)
+    if analysis_type == "general":
+        st.markdown(f"### 財務データ（{fiscal_period}）")
+        table = pd.DataFrame({
+            "項目": ["売上高", "営業利益", "純利益", "平均総資産", "平均自己資本"],
+            "値": [money(d[key], values.currency) for key in ("revenue", "operating_income", "net_income", "avg_assets", "avg_equity")],
+            "対象年度": [fiscal_period] * 5,
+        })
+        st.dataframe(table, hide_index=True, use_container_width=True)
 
-    st.markdown("### 同業他社比較")
-    comparison_caution = industry_comparison_caution(selected.industry)
+    if analysis_type == "general":
+        st.markdown("### 同業他社比較")
+    comparison_caution = industry_comparison_caution(selected.industry) if analysis_type == "general" else None
     if comparison_caution:
         st.warning(comparison_caution)
     comparison_rows = [PeerSnapshot(selected.name, selected.security_code[:4], fiscal_period, metrics), *peers]
@@ -208,15 +249,16 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
         "総資産回転率": [mult(row.metrics.asset_turnover) for row in comparison_rows],
         "財務レバレッジ": [mult(row.metrics.financial_leverage, "倍") for row in comparison_rows],
     })
-    st.dataframe(comparison, hide_index=True, use_container_width=True)
-    with st.expander("同業候補の選定理由"):
-        if peer_candidates:
-            peer_names_by_code = {peer.security_code: peer.name for peer in peers}
-            for peer_code, reason in peer_candidates:
-                name = peer_names_by_code.get(peer_code, "取得できなかった候補")
-                st.write(f"• {name}（{peer_code}）: {reason}")
-        else:
-            st.write("比較可能な同業候補を取得できませんでした。")
+    if analysis_type == "general":
+        st.dataframe(comparison, hide_index=True, use_container_width=True)
+        with st.expander("同業候補の選定理由"):
+            if peer_candidates:
+                peer_names_by_code = {peer.security_code: peer.name for peer in peers}
+                for peer_code, reason in peer_candidates:
+                    name = peer_names_by_code.get(peer_code, "取得できなかった候補")
+                    st.write(f"• {name}（{peer_code}）: {reason}")
+            else:
+                st.write("比較可能な同業候補を取得できませんでした。")
     statistics = comparison_statistics(metrics, peers)
     summary = pd.DataFrame({
         "集計": ["単純平均", "中央値"],
@@ -228,11 +270,12 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
         "総資産回転率": [mult(statistics[key]["asset_turnover"]) for key in ("average", "median")],
         "財務レバレッジ": [mult(statistics[key]["financial_leverage"], "倍") for key in ("average", "median")],
     })
-    st.dataframe(summary, hide_index=True, use_container_width=True)
+    if analysis_type == "general":
+        st.dataframe(summary, hide_index=True, use_container_width=True)
     outlier_warning = comparison_outlier_warning(metrics, peers)
-    if outlier_warning:
+    if analysis_type == "general" and outlier_warning:
         st.warning(outlier_warning)
-    if peer_errors:
+    if analysis_type == "general" and peer_errors:
         st.warning("一部の同業データを取得できませんでした: " + " / ".join(peer_errors))
 
     with st.spinner("直近約1年の公式発表・重要ニュースを確認中..."):
@@ -242,9 +285,33 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
             material_result = MaterialResult((), (f"最新材料の取得処理: {exc}",))
 
     st.markdown("### 財務・業界分析")
-    analysis = build_six_frame_analysis(
-        selected.name, selected.industry, fiscal_period, metrics, peers, material_result.events
-    )
+    if analysis_type == "general":
+        analysis = build_six_frame_analysis(
+            selected.name, selected.industry, fiscal_period, metrics, peers, material_result.events
+        )
+    elif analysis_type == "bank":
+        latest = [
+            f"{event.item.published_date.isoformat()}「{event.item.title}」— {event.financial_impacts[0]}"
+            for event in material_result.events[:3]
+        ] or ["最新材料を取得できなかったため、EDINET開示値のみを表示しています。"]
+        analysis = {
+            "財務上の強み": ["銀行業ではROE・ROA、自己資本の厚み、預貸構造を組み合わせて確認します。"],
+            "財務上の弱み": ["取得できない銀行KPIは推定していません。EDINET原本の業務別・セグメント別情報も確認が必要です。"],
+            "業界構造": ["銀行は預金等で調達した資金を貸出・運用するため、一般企業の売上高ベースのDuPont比較には適しません。"],
+            "最新材料": latest,
+            "今後の注目指標": ["貸出金、預金、利ざや、与信費用、自己資本比率の推移。"],
+            "投資家が確認すべき点": ["金利環境、貸出先の信用リスク、資本規制、傘下銀行の収益構成を確認する。"],
+        }
+    else:
+        industry_label = {"securities": "証券業", "insurance": "保険業", "financial": "その他金融業"}[analysis_type]
+        analysis = {
+            "財務上の強み": [f"{industry_label}専用KPIは未実装のため、強みを推定評価していません。"],
+            "財務上の弱み": [f"{industry_label}専用KPIは未実装のため、弱みを推定評価していません。"],
+            "業界構造": [f"{industry_label}は一般企業や銀行と収益・資産構造が異なるため、専用指標での分析が必要です。"],
+            "最新材料": ["最新材料は下記の根拠欄で確認してください。"],
+            "今後の注目指標": [f"{industry_label}固有の指標は今後対応予定です。"],
+            "投資家が確認すべき点": ["EDINET原本の事業別収益、リスク情報、自己資本に関する開示を確認してください。"],
+        }
     key_points = [
         analysis["財務上の強み"][0],
         analysis["財務上の弱み"][0],
@@ -289,7 +356,8 @@ if st.button("分析する", type="primary", use_container_width=True, disabled=
             st.info("重要材料を確認できなかったため、財務分析のみ表示しています。")
     if material_result.errors:
         st.warning("一部の情報源を取得できませんでした（財務分析は継続）: " + " / ".join(material_result.errors))
-    st.info("計算式: ROE=純利益÷平均自己資本、ROA=純利益÷平均総資産、純利益率=純利益÷売上高、営業利益率=営業利益÷売上高、総資産回転率=売上高÷平均総資産、財務レバレッジ=平均総資産÷平均自己資本。")
+    if analysis_type == "general":
+        st.info("計算式: ROE=純利益÷平均自己資本、ROA=純利益÷平均総資産、純利益率=純利益÷売上高、営業利益率=営業利益÷売上高、総資産回転率=売上高÷平均総資産、財務レバレッジ=平均総資産÷平均自己資本。")
     st.caption("平均残高は当期末と前期末のEDINET開示値から算出。同業比較は事業内容ルールを優先し、未登録時はEDINET業種から暫定選定した代表2社の最新有価証券報告書を使用。最新材料は公式発表・許可リスト化した報道の見出しを根拠に、財務への影響可能性をルールベースで整理しています。数値・分析は投資判断ではなく学習用の概算です。")
 
 st.divider()

@@ -3,6 +3,7 @@ from financial_analysis import (
     classify_business_model, comparison_statistics, dupont_driver,
     industry_comparison_caution, representative_peer_codes,
     roe_engine_explanation, select_peer_candidates,
+    peer_similarity_score,
 )
 from news_analysis import MaterialEvent, NewsItem
 from datetime import date
@@ -24,6 +25,20 @@ def test_kanematsu_uses_business_content_peers_with_reasons():
     candidates = select_peer_candidates("卸売業", "80200")
     assert tuple(code for code, _ in candidates) == ("8001", "8058")
     assert all("総合商社" in reason for _, reason in candidates)
+
+
+def test_kinki_sharyo_does_not_select_automakers_as_peers():
+    candidates = select_peer_candidates("輸送用機器", "71220")
+    codes = tuple(code for code, _ in candidates)
+    assert "7102" in codes
+    assert "7267" not in codes and "7201" not in codes
+    assert "鉄道車両" in candidates[0][1]
+
+
+def test_peer_similarity_weights_business_content_over_broad_industry():
+    rail_peer = peer_similarity_score(True, 4, 1, True)
+    automaker = peer_similarity_score(True, 0, 0, False)
+    assert rail_peer > automaker
 
 
 def test_business_model_separates_primary_from_auxiliary_traits():

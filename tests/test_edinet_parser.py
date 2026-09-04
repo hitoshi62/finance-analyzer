@@ -1,7 +1,7 @@
 import io
 import zipfile
 
-from edinet_parser import parse_financial_values, read_edinet_csv_zip
+from edinet_parser import normalize_percentage_fraction, parse_financial_values, read_edinet_csv_zip
 from financial_metrics import calculate_metrics
 
 
@@ -48,3 +48,26 @@ def test_japanese_gaap_equity_excludes_noncontrolling_interests():
     values = parse_financial_values(read_edinet_csv_zip(output.getvalue()))
     assert values.current_equity == 900
     assert values.prior_equity == 820
+
+
+def test_bank_kpis_are_read_without_estimating_missing_values():
+    rows = (
+        "要素ID,項目名,コンテキストID,相対年度,連結・個別,期間・時点,ユニットID,単位,値\n"
+        "jppfs_cor:OrdinaryIncomeLoss,経常利益,CurrentYearDuration,当期,連結,期間,JPY,円,120\n"
+        "jppfs_cor:LoansAndBillsDiscounted,貸出金,CurrentYearInstant,当期,連結,時点,JPY,円,8000\n"
+        "jppfs_cor:Deposits,預金,CurrentYearInstant,当期,連結,時点,JPY,円,10000\n"
+    ).encode("utf-8-sig")
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("XBRL_TO_CSV/bank.csv", rows)
+    values = parse_financial_values(read_edinet_csv_zip(output.getvalue()))
+    assert values.ordinary_income == 120
+    assert values.loans == 8000
+    assert values.deposits == 10000
+    assert values.bank_equity_ratio is None
+
+
+def test_percentage_normalization_avoids_double_conversion():
+    assert normalize_percentage_fraction(0.3) == 0.3
+    assert normalize_percentage_fraction(30) == 0.3
+    assert normalize_percentage_fraction(None) is None

@@ -6,6 +6,7 @@ from statistics import mean, median
 
 from financial_metrics import Metrics
 from news_analysis import MaterialEvent
+from company_profile import BUSINESS_PROFILES
 
 
 PEER_CODES_BY_INDUSTRY = {
@@ -72,10 +73,43 @@ def select_peer_candidates(industry: str, own_security_code: str) -> tuple[tuple
     own = own_security_code[:4]
     if own in BUSINESS_PEERS_BY_CODE:
         return BUSINESS_PEERS_BY_CODE[own]
+    own_profile = BUSINESS_PROFILES.get(own)
+    if own_profile:
+        scored: list[tuple[int, str, str]] = []
+        for code, candidate in BUSINESS_PROFILES.items():
+            if code == own or candidate.broad_industry != industry:
+                continue
+            shared_keywords = set(own_profile.keywords) & set(candidate.keywords)
+            shared_segments = set(own_profile.segments) & set(candidate.segments)
+            score = peer_similarity_score(
+                candidate.broad_industry == own_profile.broad_industry,
+                len(shared_keywords), len(shared_segments),
+                bool(own_profile.business_model and own_profile.business_model == candidate.business_model),
+            )
+            # 大分類一致だけでは同業としない。
+            if not shared_keywords and not shared_segments and own_profile.business_model != candidate.business_model:
+                continue
+            common = sorted(shared_segments or shared_keywords)
+            basis = "・".join(common[:2]) if common else own_profile.detailed_industry
+            scored.append((score, code, f"{basis}が共通するため選定（同業類似度 {score}点）"))
+        if scored:
+            scored.sort(reverse=True)
+            return tuple((code, reason) for score, code, reason in scored[:2])
     return tuple(
         (code, f"EDINET業種「{industry}」の代表企業として選定（事業構成の差は要確認）")
         for code in PEER_CODES_BY_INDUSTRY.get(industry, ()) if code != own
     )
+
+
+def peer_similarity_score(
+    industry_matches: bool,
+    shared_keywords: int,
+    shared_segments: int,
+    business_model_matches: bool,
+) -> int:
+    """Score explainable peer similarity, keeping broad industry as a weak signal."""
+    return min(100, (10 if industry_matches else 0) + min(shared_keywords, 4) * 10
+               + min(shared_segments, 2) * 20 + (10 if business_model_matches else 0))
 
 
 def classify_business_model(metrics: Metrics, peers: list[PeerSnapshot]) -> BusinessModelClassification:

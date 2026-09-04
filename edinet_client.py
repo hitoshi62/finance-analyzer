@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import time
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -182,21 +183,31 @@ def normalize_security_code(value: str) -> str:
     return value
 
 
+def normalize_company_search_text(value: str) -> str:
+    """Normalize search comparison text without altering the displayed legal name."""
+    return unicodedata.normalize("NFKC", value).strip().replace("證", "証").casefold()
+
+
 def find_companies(companies: Iterable[Company], query: str, limit: int = 20) -> list[Company]:
     q = query.strip()
     if not q:
         return []
     q_upper = q.upper()
+    normalized_query = normalize_company_search_text(q)
     security_query = normalize_security_code(q)
     exact: list[Company] = []
+    prefix: list[Company] = []
     partial: list[Company] = []
     for company in companies:
         security = normalize_security_code(company.security_code)
-        if q_upper == company.edinet_code or security_query == security or q == company.name:
+        normalized_name = normalize_company_search_text(company.name)
+        if q_upper == company.edinet_code or security_query == security or normalized_query == normalized_name:
             exact.append(company)
-        elif q.casefold() in company.name.casefold():
+        elif normalized_name.startswith(normalized_query):
+            prefix.append(company)
+        elif normalized_query in normalized_name:
             partial.append(company)
-    return (exact + partial)[:limit]
+    return (exact + prefix + partial)[:limit]
 
 
 def _parse_fiscal_month_day(value: str) -> tuple[int, int]:

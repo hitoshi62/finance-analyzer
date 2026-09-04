@@ -26,6 +26,22 @@ def test_load_and_find_listed_company():
     assert find_companies(companies, "テスト")[0].security_code == "12340"
 
 
+def test_company_search_orders_exact_then_prefix_then_partial():
+    companies = [
+        Company("E3", "新テスト株式会社", "33330", "03-31"),
+        Company("E2", "テスト工業株式会社", "22220", "03-31"),
+        Company("E1", "テスト", "11110", "03-31"),
+    ]
+    assert [company.edinet_code for company in find_companies(companies, "テスト")] == ["E1", "E2", "E3"]
+
+
+def test_company_search_normalizes_sho_variant_but_preserves_official_name():
+    company = Company("E00001", "野村證券株式会社", "", "03-31")
+    result = find_companies([company], "野村証券")
+    assert result == [company]
+    assert result[0].name == "野村證券株式会社"
+
+
 def test_find_latest_annual_filing_filters_document_type():
     company = Company("E00001", "テスト株式会社", "12340", "03-31")
 

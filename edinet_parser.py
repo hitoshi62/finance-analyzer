@@ -20,6 +20,10 @@ CONCEPTS = {
     "net_assets": ("NetAssets",),
     "noncontrolling_interests": ("NonControllingInterests", "MinorityInterests"),
     "share_acquisition_rights": ("SubscriptionRightsToShares", "ShareAcquisitionRights"),
+    "ordinary_income": ("OrdinaryIncomeLoss", "OrdinaryIncome"),
+    "loans": ("LoansAndBillsDiscounted", "LoansAndBillsDiscountedBankingBusiness"),
+    "deposits": ("Deposits", "DepositsBankingBusiness"),
+    "capital_adequacy_ratio": ("CapitalAdequacyRatio", "ConsolidatedCapitalAdequacyRatio"),
 }
 
 
@@ -35,6 +39,10 @@ class FinancialValues:
     currency: str
     accounting_standard: str
     consolidated: bool
+    ordinary_income: float | None = None
+    loans: float | None = None
+    deposits: float | None = None
+    bank_equity_ratio: float | None = None
 
 
 def _decode_csv(raw: bytes) -> pd.DataFrame:
@@ -84,6 +92,13 @@ def _number(value: object) -> float | None:
         return -result if negative else result
     except ValueError:
         return None
+
+
+def normalize_percentage_fraction(value: float | None) -> float | None:
+    """Normalize either XBRL fraction form (0.3) or display-percent form (30)."""
+    if value is None:
+        return None
+    return value / 100 if abs(value) > 1 else value
 
 
 def _concept_suffix(value: str) -> str:
@@ -166,6 +181,11 @@ def parse_financial_values(frame: pd.DataFrame, prefer_consolidated: bool = True
     picked: dict[str, float | None] = {}
     for key in ("revenue", "operating_income", "net_income"):
         picked[key], _ = _pick(rows, CONCEPTS[key], "duration", True, prefer_consolidated)
+    ordinary_income, _ = _pick(rows, CONCEPTS["ordinary_income"], "duration", True, prefer_consolidated)
+    loans, _ = _pick(rows, CONCEPTS["loans"], "instant", True, prefer_consolidated)
+    deposits, _ = _pick(rows, CONCEPTS["deposits"], "instant", True, prefer_consolidated)
+    capital_adequacy_ratio, _ = _pick(rows, CONCEPTS["capital_adequacy_ratio"], "instant", True, prefer_consolidated)
+    capital_adequacy_ratio = normalize_percentage_fraction(capital_adequacy_ratio)
     current_assets, _ = _pick(rows, CONCEPTS["assets"], "instant", True, prefer_consolidated)
     prior_assets, _ = _pick(rows, CONCEPTS["assets"], "instant", False, prefer_consolidated)
     current_equity, _ = _pick(rows, CONCEPTS["equity"], "instant", True, prefer_consolidated)
@@ -181,4 +201,8 @@ def parse_financial_values(frame: pd.DataFrame, prefer_consolidated: bool = True
             current_equity = current_net_assets - (current_nci or 0) - (current_rights or 0)
         if prior_net_assets is not None:
             prior_equity = prior_net_assets - (prior_nci or 0) - (prior_rights or 0)
-    return FinancialValues(picked["revenue"], picked["operating_income"], picked["net_income"], current_assets, prior_assets, current_equity, prior_equity, "JPY", standard, prefer_consolidated)
+    return FinancialValues(
+        picked["revenue"], picked["operating_income"], picked["net_income"],
+        current_assets, prior_assets, current_equity, prior_equity, "JPY", standard,
+        prefer_consolidated, ordinary_income, loans, deposits, capital_adequacy_ratio,
+    )
