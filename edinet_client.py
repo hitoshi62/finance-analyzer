@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import os
 import time
-import unicodedata
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -11,6 +10,8 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 import requests
+
+from company_identity import normalize_company_search_text
 
 API_BASE = "https://api.edinet-fsa.go.jp/api/v2"
 CODE_LIST_URL = "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelist/Edinetcode.zip"
@@ -181,11 +182,6 @@ def normalize_security_code(value: str) -> str:
     if len(value) == 5 and value.isdigit() and value.endswith("0"):
         value = value[:4]
     return value
-
-
-def normalize_company_search_text(value: str) -> str:
-    """Normalize search comparison text without altering the displayed legal name."""
-    return unicodedata.normalize("NFKC", value).strip().replace("證", "証").casefold()
 
 
 def find_companies(companies: Iterable[Company], query: str, limit: int = 20) -> list[Company]:

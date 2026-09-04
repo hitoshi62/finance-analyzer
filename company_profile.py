@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
-from edinet_client import Company, normalize_company_search_text
+from company_identity import normalize_company_search_text
+
+if TYPE_CHECKING:
+    from edinet_client import Company
 
 
 class ListingKind(str, Enum):
